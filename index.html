@@ -320,7 +320,7 @@ function persistLocal(){try{localStorage.setItem("wish_data",JSON.stringify({ite
 const newId=()=>("i"+Date.now().toString(36)+Math.random().toString(36).slice(2,7));
 
 function saveItem(it){
-  const i=items.findIndex(x=>x.id===id); if(i>=0)items[i]=it; else items.push(it);
+  const i=items.findIndex(x=>x.id===it.id); if(i>=0)items[i]=it; else items.push(it);
   render();
   persistLocal();
 }
