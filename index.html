@@ -302,7 +302,15 @@ async function datosDelEnlace(u){
 /* ---------- fotos (IndexedDB) ---------- */
 const fotos=new Map();
 let idbP=null;
-function idb(){if(!idbP)idbP=new Promise((res,rej)=>{try{const r=indexedDB.open("mi-wishlist",1);r.onupgradeneeded=()=>r.result.createObjectStore("fotos");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}catch(e){rej(e)}});return idbP}
+function idb(){if(!idbP)idbP=new Promise((res,rej)=>{
+  const t=setTimeout(()=>rej(new Error("tiempo agotado")),3000);
+  try{const r=indexedDB.open("mi-wishlist",2);
+    r.onupgradeneeded=()=>{const d=r.result;for(const n of ["fotos","estado"])if(!d.objectStoreNames.contains(n))d.createObjectStore(n)};
+    r.onsuccess=()=>{clearTimeout(t);const d=r.result;d.onversionchange=()=>d.close();res(d)};
+    r.onerror=()=>{clearTimeout(t);rej(r.error)};
+    r.onblocked=()=>{/* otra ventana abierta con la versión anterior: esperamos al tiempo límite */};
+  }catch(e){clearTimeout(t);rej(e)}});
+  idbP.catch(()=>{idbP=null});return idbP}
 async function idbDo(mode,fn){const d=await idb();return new Promise((res,rej)=>{const tx=d.transaction("fotos",mode);const st=tx.objectStore("fotos");const out=fn(st);tx.oncomplete=()=>res(out&&out.result);tx.onerror=()=>rej(tx.error)})}
 async function cargarFotos(){try{const d=await idb();await new Promise(res=>{const tx=d.transaction("fotos","readonly");const c=tx.objectStore("fotos").openCursor();c.onsuccess=()=>{const cur=c.result;if(cur){fotos.set(cur.key,cur.value);cur.continue()}else res()};c.onerror=()=>res()})}catch(e){}}
 async function guardarFoto(id,url){fotos.set(id,url);try{await idbDo("readwrite",st=>st.put(url,id))}catch(e){toast("No se ha podido guardar la imagen")}}
@@ -312,11 +320,21 @@ function comprimir(file){return new Promise((res,rej)=>{const u=URL.createObject
     const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);res(c.toDataURL("image/jpeg",.82))};
   im.onerror=()=>{URL.revokeObjectURL(u);rej()};im.src=u})}
 
+let cargado=false;
 let chain=Promise.resolve();
 function queue(fn){chain=chain.then(fn).catch(e=>toast("No se ha podido guardar. Revisa la conexión e inténtalo otra vez."));return chain}
 function toast(msg){const t=$("toast");t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,2800)}
 
-function persistLocal(){try{localStorage.setItem("wish_data",JSON.stringify({items,ahorro}))}catch(e){toast("No se ha podido guardar en el móvil. Haz una copia de seguridad.")}}
+let guardando=Promise.resolve();
+function persistLocal(){
+  const snap=JSON.parse(JSON.stringify({items,ahorro}));
+  let ok=false;
+  try{localStorage.setItem("wish_data",JSON.stringify(snap));ok=true}catch(e){}
+  guardando=guardando.then(async()=>{
+    try{const d=await idb();await new Promise((res,rej)=>{const tx=d.transaction("estado","readwrite");tx.objectStore("estado").put(snap,"data");tx.oncomplete=res;tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error)});ok=true}catch(e){}
+    if(!ok)toast("No se ha podido guardar en el móvil. Libera espacio o haz una copia de seguridad.");
+  });
+}
 const newId=()=>("i"+Date.now().toString(36)+Math.random().toString(36).slice(2,7));
 
 function saveItem(it){
@@ -376,6 +394,7 @@ function renderDeseos(){
 
   const box=$("list");
   if(mode==="loading"){box.innerHTML=`<div class="empty"><h3>Cargando tu lista…</h3></div>`;return}
+  if(!cargado){box.innerHTML=`<div class="empty"><h3>Cargando tu lista…</h3></div>`;return}
   if(!items.length){
     box.innerHTML=`<div class="empty"><svg class="big-ico" viewBox="0 0 24 22" aria-hidden="true"><path d="M12 21s-9-5.6-9-12.1C3 5.6 5.4 3 8.4 3c1.7 0 3 .8 3.6 2 .6-1.2 1.9-2 3.6-2C18.6 3 21 5.6 21 8.9 21 15.4 12 21 12 21z" fill="var(--berry-soft)" stroke="var(--berry)" stroke-width="1.2"/></svg><h3>Tu wishlist está vacía</h3>
       <p>Apunta la ropa, el maquillaje o cualquier cosa que te apetezca. Ponle precio, cuánto lo deseas y si lo quieres, te lo piensas o es para regalo.</p>
@@ -523,7 +542,15 @@ function openForm(it){
     saveItem({id:nid,nombre,precio:Math.round(precio*100)/100,tipo:$("f-tiposel").value,
       categoria:(document.querySelector('input[name="cat"]:checked')||{}).value||"quiero",deseo,
       enlace:normUrl($("f-enlace").value),fotoUrl:foto?"":fotoUrl,tienda:$("f-tienda").value.trim(),color:$("f-color").value.trim(),talla:$("f-talla").value.trim(),nota:$("f-nota").value.trim(),comprado:it?!!it.comprado:false,creado:it?.creado||Date.now()});
+    const nuevo=items.find(x=>x.id===nid);
+    if(nuevo){let cambio=false;
+      if(ui.cat!=="todos"&&ui.cat!==nuevo.categoria){ui.cat="todos";cambio=true}
+      if(ui.tipo!=="todos"&&ui.tipo!==nuevo.tipo){ui.tipo="todos";cambio=true}
+      if(nuevo.comprado&&!ui.showDone){ui.showDone=true;cambio=true}
+      if(ui.tab!=="deseos"){ui.tab="deseos";cambio=true}
+      if(cambio){saveUi();render()}}
     close(); toast(it?"Cambios guardados":"Añadido a tu wishlist");
+    if(!it)setTimeout(()=>{const el=document.querySelector(`[data-id="${nid}"]`);el&&el.closest(".item").scrollIntoView({behavior:"smooth",block:"center"})},80);
     }catch(x){fallo("No se ha podido guardar: "+(x&&x.message||x))}
   };
 }
@@ -569,11 +596,17 @@ function loadExamples(){
 }
 
 /* ---------- arranque ---------- */
-try{const d=JSON.parse(localStorage.getItem("wish_data")||"null");if(d){items=Array.isArray(d.items)?d.items:[];ahorro=d.ahorro||ahorro}}catch(e){}
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
-render();
-items.forEach(i=>{if(!TIPOS[i.tipo])i.tipo="otros"});
-cargarFotos().then(render);
+(async()=>{
+  let d=null;
+  try{const db=await idb();d=await new Promise(res=>{const rq=db.transaction("estado","readonly").objectStore("estado").get("data");rq.onsuccess=()=>res(rq.result||null);rq.onerror=()=>res(null)})}catch(e){}
+  if(!d){try{d=JSON.parse(localStorage.getItem("wish_data")||"null")}catch(e){}}
+  if(d){items=Array.isArray(d.items)?d.items:[];ahorro=d.ahorro||ahorro}
+  items.forEach(i=>{if(!TIPOS[i.tipo])i.tipo="otros"});
+  cargado=true;render();
+  if(d)persistLocal();
+  await cargarFotos();render();
+})();
 
 /* ---------- copia de seguridad ---------- */
 function exportar(){
